@@ -1,0 +1,9 @@
+# API Key – nie ins Git einchecken!
+config.js
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/

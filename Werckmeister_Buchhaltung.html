@@ -1,0 +1,1955 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Verein Werckmeister — Buchhaltung</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #F1F5F9; font-family: sans-serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script src="config.js"></script>
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo, useCallback, Fragment } = React;
+
+    // Zentrale Farb-Konstante für gedämpften Text (Labels, Platzhalter, sekundäre Infos)
+    const MUTED = "#3A3A3A";
+
+    // API Key wird aus config.js geladen (siehe config.example.js)
+    const ANTHROPIC_API_KEY = window.ANTHROPIC_API_KEY || "";
+
+
+// ═══════════════════════════════════════════════════════════════
+// DATEN: Schweizer Vereins-Kontenrahmen
+// ═══════════════════════════════════════════════════════════════
+const DEFAULT_ACCOUNTS = [
+  // AKTIVEN
+  { number:"1000", name:"Kasse",                           category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1010", name:"Postkonto (PostFinance)",         category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1020", name:"Bankkonto",                       category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1060", name:"Wertschriften (kurzfristig)",     category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1100", name:"Debitoren",                       category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1300", name:"Aktive Rechnungsabgrenzung",      category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1400", name:"Vorräte",                         category:"aktiven", group:"Umlaufvermögen" },
+  { number:"1500", name:"Sachanlagen (Maschinen/Geräte)",  category:"aktiven", group:"Anlagevermögen"  },
+  { number:"1520", name:"Mobiliar und Einrichtungen",      category:"aktiven", group:"Anlagevermögen"  },
+  { number:"1530", name:"EDV-Anlagen",                     category:"aktiven", group:"Anlagevermögen"  },
+  { number:"1600", name:"Finanzanlagen (langfristig)",     category:"aktiven", group:"Anlagevermögen"  },
+  // PASSIVEN
+  { number:"2000", name:"Kreditoren",                      category:"passiven", group:"Kurzfristiges Fremdkapital" },
+  { number:"2100", name:"Kurzfristige Bankverbindlichk.",  category:"passiven", group:"Kurzfristiges Fremdkapital" },
+  { number:"2200", name:"Erhaltene Anzahlungen",           category:"passiven", group:"Kurzfristiges Fremdkapital" },
+  { number:"2300", name:"Passive Rechnungsabgrenzung",     category:"passiven", group:"Kurzfristiges Fremdkapital" },
+  { number:"2400", name:"Langfristige Verbindlichkeiten",  category:"passiven", group:"Langfristiges Fremdkapital" },
+  { number:"2800", name:"Vereinsvermögen / Eigenkapital",  category:"passiven", group:"Eigenkapital"               },
+  { number:"2850", name:"Reserven",                        category:"passiven", group:"Eigenkapital"               },
+  // ERTRÄGE
+  { number:"3000", name:"Mitgliederbeiträge",              category:"ertrag", group:"Vereinserträge"  },
+  { number:"3100", name:"Spenden und Schenkungen",         category:"ertrag", group:"Vereinserträge"  },
+  { number:"3200", name:"Veranstaltungseinnahmen",         category:"ertrag", group:"Vereinserträge"  },
+  { number:"3300", name:"Subventionen / Beiträge Dritter",category:"ertrag", group:"Vereinserträge"  },
+  { number:"3400", name:"Zinserträge",                     category:"ertrag", group:"Finanzerträge"   },
+  { number:"3500", name:"Sonstige Erträge",                category:"ertrag", group:"Übriges"         },
+  // AUFWÄNDE
+  { number:"4000", name:"Lohnaufwand",                     category:"aufwand", group:"Personalaufwand"   },
+  { number:"4100", name:"Sozialversicherungsaufwand",      category:"aufwand", group:"Personalaufwand"   },
+  { number:"4200", name:"Sonstiger Personalaufwand",       category:"aufwand", group:"Personalaufwand"   },
+  { number:"5000", name:"Raumaufwand / Miete",             category:"aufwand", group:"Sachaufwand"        },
+  { number:"5100", name:"Unterhalt und Reparaturen",       category:"aufwand", group:"Sachaufwand"        },
+  { number:"5200", name:"Energie und Wasser",              category:"aufwand", group:"Sachaufwand"        },
+  { number:"6000", name:"Büro- und Verwaltungsaufwand",    category:"aufwand", group:"Verwaltungsaufwand" },
+  { number:"6100", name:"Veranstaltungsaufwand",           category:"aufwand", group:"Projektaufwand"     },
+  { number:"6200", name:"Werbung und Öffentlichkeitsarb.", category:"aufwand", group:"Projektaufwand"     },
+  { number:"6300", name:"Reise- und Transportaufwand",     category:"aufwand", group:"Verwaltungsaufwand" },
+  { number:"6400", name:"Abschreibungen",                  category:"aufwand", group:"Abschreibungen"     },
+  { number:"6500", name:"Versicherungsaufwand",            category:"aufwand", group:"Verwaltungsaufwand" },
+  { number:"6600", name:"Diverses",                        category:"aufwand", group:"Übriges"            },
+];
+
+const STORAGE_KEY = "werckmeister_buch_v1";
+
+// ═══════════════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════════════
+const fmt = (n) =>
+  new Intl.NumberFormat("de-CH", { minimumFractionDigits:2, maximumFractionDigits:2 }).format(n||0);
+
+// Real file download for standalone HTML
+const dlFile = (content, filename) => {
+  const bom = "\uFEFF";
+  const blob = new Blob([bom + content], { type: "text/plain;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+// Word-Export: Erzeugt eine .docx-Datei aus HTML-Inhalt (kompatibel mit Word & Google Docs)
+const exportWord = (htmlContent, filename) => {
+  const doc = `<html xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:w="urn:schemas-microsoft-com:office:word"
+    xmlns="http://www.w3.org/TR/REC-html40">
+    <head><meta charset="utf-8">
+    <style>
+      body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #0F172A; }
+      table { border-collapse: collapse; width: 100%; margin-bottom: 8pt; }
+      th, td { border: 1px solid #CBD5E1; padding: 1pt 4pt; font-size: 10pt; }
+      th { background: #F1F5F9; font-weight: 700; text-transform: uppercase; font-size: 9pt; color: #475569; }
+      .section-header { background: #F8FAFC; font-weight: 700; font-size: 9pt; color: #64748B;
+                         text-transform: uppercase; letter-spacing: 0.5pt; }
+      .subtotal { font-style: italic; color: #3A3A3A; font-size: 9.5pt; }
+      .total-row { font-weight: 800; font-size: 11pt; }
+      .total-row td { border-top: 2pt solid currentColor; }
+      .amount { text-align: right; font-family: 'Courier New', monospace; }
+      .center { text-align: center; }
+      .muted { color: #3A3A3A; }
+      h1 { font-size: 16pt; text-align: center; margin-bottom: 2pt; }
+      h2 { font-size: 11pt; text-align: center; color: #64748B; margin-bottom: 8pt; }
+    </style></head><body>${htmlContent}</body></html>`;
+  const blob = new Blob(["\uFEFF" + doc], {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+// Stub – not needed in standalone mode
+function ExportModal() { return null; }
+
+// ═══════════════════════════════════════════════════════════════
+// UI PRIMITIVES
+// ═══════════════════════════════════════════════════════════════
+const IS = {                                          // inputStyle
+  width:"100%", padding:"8px 10px",
+  border:"1.5px solid #CBD5E1", borderRadius:6,
+  fontSize:13, fontFamily:"inherit", background:"white",
+  transition:"border-color .15s, box-shadow .15s",
+};
+const PB = {                                          // primaryButton
+  padding:"8px 18px", background:"#0F2460", color:"white",
+  border:"none", borderRadius:6, cursor:"pointer",
+  fontSize:13, fontWeight:600, fontFamily:"inherit", whiteSpace:"nowrap",
+};
+const SB = {                                          // secondaryButton
+  padding:"7px 13px", background:"white", color:"#374151",
+  border:"1.5px solid #CBD5E1", borderRadius:6, cursor:"pointer",
+  fontSize:12, fontWeight:500, fontFamily:"inherit", whiteSpace:"nowrap",
+};
+
+const Card = ({ title, children, action }) => (
+  <div style={{ background:"white", borderRadius:10, border:"1px solid #E2E8F0",
+                marginBottom:16, overflow:"hidden", boxShadow:"0 1px 3px rgba(0,0,0,.05)" }}>
+    {title && (
+      <div style={{ padding:"11px 16px", borderBottom:"1px solid #E2E8F0",
+                    display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+        <span style={{ fontWeight:600, fontSize:13.5, color:"#0F172A" }}>{title}</span>
+        {action}
+      </div>
+    )}
+    <div style={{ padding:16 }}>{children}</div>
+  </div>
+);
+
+const Field = ({ label, children, style }) => (
+  <div style={style}>
+    <label style={{ display:"block", fontSize:10.5, fontWeight:700, color:"#64748B",
+                    marginBottom:4, textTransform:"uppercase", letterSpacing:.6 }}>
+      {label}
+    </label>
+    {children}
+  </div>
+);
+
+const Th = ({ children, align="left", style={}, ...p }) => (
+  <th {...p} style={{ padding:"9px 12px", textAlign:align, fontWeight:700, fontSize:10.5,
+                      color:"#64748B", textTransform:"uppercase", letterSpacing:.5,
+                      whiteSpace:"nowrap", background:"#F8FAFC", borderBottom:"1px solid #E2E8F0",
+                      ...style }}>
+    {children}
+  </th>
+);
+
+const Td = ({ children, align="left", style={}, ...p }) => (
+  <td {...p} style={{ padding:"8px 12px", textAlign:align, fontSize:13,
+                      verticalAlign:"middle", borderBottom:"1px solid #F1F5F9", ...style }}>
+    {children}
+  </td>
+);
+
+const Badge = ({ cat }) => {
+  const cfg = {
+    aktiven: { bg:"#EFF6FF", fg:"#1D4ED8" },
+    passiven:{ bg:"#F0FDF4", fg:"#15803D" },
+    ertrag:  { bg:"#ECFDF5", fg:"#059669" },
+    aufwand: { bg:"#FEF2F2", fg:"#DC2626" },
+  };
+  const labels = { aktiven:"Aktiven", passiven:"Passiven", ertrag:"Ertrag", aufwand:"Aufwand" };
+  const c = cfg[cat]||{ bg:"#F3F4F6", fg:"#374151" };
+  return <span style={{ background:c.bg, color:c.fg, padding:"2px 7px", borderRadius:999,
+                         fontSize:11, fontWeight:600 }}>{labels[cat]||cat}</span>;
+};
+
+const AccountSelect = ({ accounts, value, onChange, placeholder="Konto wählen…" }) => (
+  <select value={value} onChange={e => onChange(e.target.value)} style={IS}>
+    <option value="">{placeholder}</option>
+    {["aktiven","passiven","ertrag","aufwand"].map(cat => (
+      <optgroup key={cat} label={
+        {aktiven:"── AKTIVEN",passiven:"── PASSIVEN",ertrag:"── ERTRÄGE",aufwand:"── AUFWÄNDE"}[cat]
+      }>
+        {accounts.filter(a=>a.category===cat).sort((a,b)=>a.number.localeCompare(b.number)).map(a=>(
+          <option key={a.number} value={a.number}>{a.number} – {a.name}</option>
+        ))}
+      </optgroup>
+    ))}
+  </select>
+);
+
+// ═══════════════════════════════════════════════════════════════
+// TAB: JOURNAL
+// ═══════════════════════════════════════════════════════════════
+function JournalTab({ accounts, setAccounts, entries, setEntries, year }) {
+  const blank = { date:`${year}-01-01`, description:"", debit:"", credit:"", amount:"", reference:"" };
+  const [form,    setForm]    = useState(blank);
+  const [error,   setError]   = useState("");
+  const [filterY, setFilterY] = useState(true);
+  const [sortDir, setSortDir] = useState("desc");
+  const [editing, setEditing] = useState(null); // {id, date, description, reference, debit, credit, amount}
+  const [editErr, setEditErr] = useState("");
+
+  const f = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  const startEdit = (e) => setEditing({ ...e, amount: String(e.amount) });
+  const cancelEdit = () => { setEditing(null); setEditErr(""); };
+  const saveEdit = () => {
+    if(!editing.date||!editing.description||!editing.debit||!editing.credit||!editing.amount){
+      setEditErr("Pflichtfelder: Datum, Text, Soll, Haben, Betrag."); return; }
+    if(editing.debit===editing.credit){ setEditErr("Soll ≠ Haben."); return; }
+    const amt = parseFloat(String(editing.amount).replace(",","."));
+    if(isNaN(amt)||amt<=0){ setEditErr("Betrag muss > 0 sein."); return; }
+    setEntries(p=>p.map(e=>e.id===editing.id?{...editing,amount:amt}:e));
+    setEditing(null); setEditErr("");
+  };
+  const ef = (k,v) => setEditing(p=>({...p,[k]:v}));
+
+  const visible = useMemo(()=>{
+    const arr = filterY ? entries.filter(e=>e.date.startsWith(String(year))) : [...entries];
+    return arr.sort((a,b)=> sortDir==="desc"
+      ? b.date.localeCompare(a.date)||b.id-a.id
+      : a.date.localeCompare(b.date)||a.id-b.id);
+  },[entries,year,filterY,sortDir]);
+
+  const add = () => {
+    if(!form.date||!form.description||!form.debit||!form.credit||!form.amount){
+      setError("Pflichtfelder: Datum, Text, Soll, Haben, Betrag."); return; }
+    if(form.debit===form.credit){ setError("Soll ≠ Haben."); return; }
+    const amt = parseFloat(form.amount.replace(",","."));
+    if(isNaN(amt)||amt<=0){ setError("Betrag muss > 0 sein."); return; }
+    setEntries(p=>[...p,{ id:Date.now(), ...form, amount:amt }]);
+    setForm(p=>({...p, description:"", amount:"", reference:""}));
+    setError("");
+  };
+
+  const [confirmDel, setConfirmDel] = useState(null);
+  const del = (id) => setConfirmDel(id);
+  const confirmDelete = () => { setEntries(p=>p.filter(e=>e.id!==confirmDel)); setConfirmDel(null); setEditing(null); };
+
+  const exportCSV = () => {
+    const h = ["Datum","Belegnr.","Buchungstext","Soll-Nr.","Soll-Konto","Haben-Nr.","Haben-Konto","Betrag CHF"];
+    const rows = visible.map(e=>[
+      e.date, e.reference||"", e.description,
+      e.debit, accounts.find(a=>a.number===e.debit)?.name||"",
+      e.credit, accounts.find(a=>a.number===e.credit)?.name||"",
+      e.amount.toFixed(2).replace(".",","),
+    ]);
+    dlFile([h,...rows].map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(";")).join("\r\n"),
+      `Werckmeister_Journal_${year}.csv`);
+  };
+
+  const exportJSON = () => {
+    dlFile(JSON.stringify({ verein:"Werckmeister", exportDate:new Date().toISOString(),
+      year, accounts, entries },null,2),
+      `Werckmeister_Backup_${new Date().toISOString().slice(0,10)}.json`);
+  };
+
+  const importJSON = (e) => {
+    const file = e.target.files[0]; if(!file) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      try {
+        const d = JSON.parse(ev.target.result);
+        if(d.accounts) setAccounts(d.accounts);
+        if(d.entries)  setEntries(d.entries);
+        alert("✓ Backup importiert!");
+      } catch { alert("Fehler: Ungültige JSON-Datei."); }
+    };
+    r.readAsText(file); e.target.value="";
+  };
+
+  const total = visible.reduce((s,e)=>s+Number(e.amount),0);
+  const accName = (n) => accounts.find(a=>a.number===n)?.name||"";
+
+  return (
+    <div>
+      <Card title="Neue Buchung erfassen">
+        <div style={{ display:"grid", gridTemplateColumns:"150px 1fr 130px 120px", gap:10 }}>
+          <Field label="Datum *">
+            <input type="date" value={form.date} onChange={e=>f("date",e.target.value)} style={IS} />
+          </Field>
+          <Field label="Buchungstext *">
+            <input type="text" value={form.description}
+              onChange={e=>f("description",e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&add()}
+              placeholder="z. B. Mitgliederbeitrag Meyer" style={IS} />
+          </Field>
+          <Field label="Belegnummer">
+            <input type="text" value={form.reference} onChange={e=>f("reference",e.target.value)}
+              placeholder="RE-001" style={IS} />
+          </Field>
+          <Field label="Betrag CHF *">
+            <input type="number" step="0.05" min="0.01" value={form.amount}
+              onChange={e=>f("amount",e.target.value)}
+              onKeyDown={e=>e.key==="Enter"&&add()}
+              placeholder="0.00"
+              style={{...IS,fontFamily:"'JetBrains Mono',monospace",textAlign:"right"}} />
+          </Field>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr auto", gap:10, marginTop:10, alignItems:"end" }}>
+          <Field label="Soll (Debit) *">
+            <AccountSelect accounts={accounts} value={form.debit} onChange={v=>f("debit",v)} />
+          </Field>
+          <Field label="Haben (Kredit) *">
+            <AccountSelect accounts={accounts} value={form.credit} onChange={v=>f("credit",v)} />
+          </Field>
+          <button onClick={add} style={{...PB,height:38}}>+ Buchen</button>
+        </div>
+        {error && (
+          <div style={{color:"#DC2626",marginTop:8,fontSize:12,padding:"6px 10px",
+                       background:"#FEF2F2",borderRadius:5}}>⚠ {error}</div>
+        )}
+      </Card>
+
+      {/* Action bar */}
+      <div className="no-print" style={{display:"flex",gap:10,marginBottom:12,alignItems:"center",flexWrap:"wrap"}}>
+        <label style={{display:"flex",alignItems:"center",gap:5,fontSize:13,color:"#555",cursor:"pointer"}}>
+          <input type="checkbox" checked={filterY} onChange={e=>setFilterY(e.target.checked)}/>
+          Nur {year}
+        </label>
+        <button onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")} style={SB}>
+          {sortDir==="desc"?"↓ Neueste":"↑ Älteste"}
+        </button>
+        <div style={{flex:1}}/>
+        <span style={{fontSize:12,color:MUTED}}>{visible.length} Buchungen</span>
+        <button onClick={exportCSV} style={SB}>📥 CSV Export</button>
+        <button onClick={exportJSON} style={SB}>💾 JSON Backup</button>
+        <label style={{...SB,cursor:"pointer",display:"inline-flex",alignItems:"center"}}>
+          📤 Restore
+          <input type="file" accept=".json" onChange={importJSON} style={{display:"none"}}/>
+        </label>
+      </div>
+
+      {/* Table */}
+      <div style={{background:"white",borderRadius:10,border:"1px solid #E2E8F0",
+                   overflow:"auto",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+        <table style={{width:"100%",borderCollapse:"collapse"}}>
+          <thead>
+            <tr>
+              <Th>Datum</Th>
+              <Th>Belegnr.</Th>
+              <Th>Buchungstext</Th>
+              <Th>Soll</Th>
+              <Th>Haben</Th>
+              <Th align="right">Betrag CHF</Th>
+              <Th className="no-print"/>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.length===0 ? (
+              <tr><td colSpan={7} style={{padding:36,textAlign:"center",color:MUTED,fontStyle:"italic"}}>
+                Noch keine Buchungen — erfasse deine erste Buchung oben.
+              </td></tr>
+            ) : visible.map(e=>{
+              const isEditing = editing?.id===e.id;
+              if(isEditing) return (
+                <tr key={e.id} style={{background:"#FEFCE8",outline:"2px solid #F59E0B",outlineOffset:"-2px"}}>
+                  <Td>
+                    <input type="date" value={editing.date} onChange={ev=>ef("date",ev.target.value)}
+                      style={{...IS,padding:"4px 6px",fontSize:12,width:130,borderColor:"#F59E0B"}}/>
+                  </Td>
+                  <Td>
+                    <input type="text" value={editing.reference} onChange={ev=>ef("reference",ev.target.value)}
+                      placeholder="—" style={{...IS,padding:"4px 6px",fontSize:12,width:90,borderColor:"#F59E0B"}}/>
+                  </Td>
+                  <Td>
+                    <input type="text" value={editing.description} onChange={ev=>ef("description",ev.target.value)}
+                      onKeyDown={ev=>{if(ev.key==="Enter")saveEdit();if(ev.key==="Escape")cancelEdit();}}
+                      autoFocus style={{...IS,padding:"4px 6px",fontSize:13,borderColor:"#F59E0B",
+                                       boxShadow:"0 0 0 3px rgba(245,158,11,.15)"}}/>
+                  </Td>
+                  <Td>
+                    <AccountSelect accounts={accounts} value={editing.debit} onChange={v=>ef("debit",v)}/>
+                  </Td>
+                  <Td>
+                    <AccountSelect accounts={accounts} value={editing.credit} onChange={v=>ef("credit",v)}/>
+                  </Td>
+                  <Td align="right">
+                    <input type="number" step="0.05" value={editing.amount} onChange={ev=>ef("amount",ev.target.value)}
+                      onKeyDown={ev=>{if(ev.key==="Enter")saveEdit();if(ev.key==="Escape")cancelEdit();}}
+                      style={{...IS,padding:"4px 6px",fontFamily:"'JetBrains Mono',monospace",
+                              textAlign:"right",fontSize:13,width:110,borderColor:"#F59E0B"}}/>
+                  </Td>
+                  <Td className="no-print" align="right">
+                    <div style={{display:"flex",gap:4,justifyContent:"flex-end",flexWrap:"wrap"}}>
+                      {editErr&&<span style={{fontSize:10,color:"#DC2626",width:"100%",textAlign:"right"}}>{editErr}</span>}
+                      <button onClick={saveEdit}
+                        style={{...PB,padding:"4px 10px",fontSize:12,background:"#16A34A"}}
+                        title="Speichern (Enter)">✓</button>
+                      <button onClick={cancelEdit}
+                        style={{...SB,padding:"4px 10px",fontSize:12}}
+                        title="Abbrechen (Esc)">✕</button>
+                      {confirmDel!==e.id
+                        ? <button onClick={()=>del(e.id)}
+                            style={{...SB,padding:"4px 10px",fontSize:12,borderColor:"#FECACA",color:"#EF4444"}}
+                            title="Buchung löschen">🗑</button>
+                        : <>
+                            <span style={{fontSize:10,color:"#DC2626",alignSelf:"center",fontWeight:600}}>Sicher?</span>
+                            <button onClick={confirmDelete} style={{...PB,padding:"4px 8px",fontSize:11,background:"#DC2626"}}>Ja</button>
+                            <button onClick={()=>setConfirmDel(null)} style={{...SB,padding:"4px 8px",fontSize:11}}>Nein</button>
+                          </>
+                      }
+                    </div>
+                  </Td>
+                </tr>
+              );
+              return (
+              <tr key={e.id} className="hover-row">
+                <Td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"#475569"}}>{e.date}</Td>
+                <Td style={{color:MUTED,fontSize:12}}>{e.reference||"—"}</Td>
+                <Td>{e.description}</Td>
+                <Td>
+                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,
+                                fontWeight:700,color:"#1D4ED8"}}>{e.debit}</span>
+                  <span style={{color:MUTED,fontSize:11,marginLeft:5}}>{accName(e.debit)}</span>
+                </Td>
+                <Td>
+                  <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,
+                                fontWeight:700,color:"#059669"}}>{e.credit}</span>
+                  <span style={{color:MUTED,fontSize:11,marginLeft:5}}>{accName(e.credit)}</span>
+                </Td>
+                <Td align="right" style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:500}}>{fmt(e.amount)}</Td>
+                <Td className="no-print" align="right">
+                  <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+                    <button onClick={()=>startEdit(e)}
+                      style={{background:"none",border:"none",color:"#CBD5E1",cursor:"pointer",
+                              fontSize:14,lineHeight:1,transition:"color .15s",padding:"2px 4px"}}
+                      onMouseEnter={ev=>ev.currentTarget.style.color="#F59E0B"}
+                      onMouseLeave={ev=>ev.currentTarget.style.color="#CBD5E1"}
+                      title="Bearbeiten">✏</button>
+                    {confirmDel!==e.id
+                      ? <button onClick={()=>del(e.id)}
+                          style={{background:"none",border:"none",color:"#CBD5E1",cursor:"pointer",
+                                  fontSize:16,lineHeight:1,transition:"color .15s",padding:"2px 4px"}}
+                          onMouseEnter={ev=>ev.target.style.color="#EF4444"}
+                          onMouseLeave={ev=>ev.target.style.color="#CBD5E1"}
+                          title="Löschen">×</button>
+                      : <div style={{display:"flex",gap:3,alignItems:"center"}}>
+                          <span style={{fontSize:10,color:"#DC2626",fontWeight:600}}>Sicher?</span>
+                          <button onClick={confirmDelete} style={{...PB,padding:"2px 7px",fontSize:11,background:"#DC2626"}}>Ja</button>
+                          <button onClick={()=>setConfirmDel(null)} style={{...SB,padding:"2px 7px",fontSize:11}}>Nein</button>
+                        </div>
+                    }
+                  </div>
+                </Td>
+              </tr>
+              );
+            })}
+          </tbody>
+          {visible.length>0 && (
+            <tfoot>
+              <tr style={{background:"#F8FAFC"}}>
+                <td colSpan={5} style={{padding:"10px 12px",fontWeight:700,fontSize:13,
+                                        borderTop:"2px solid #E2E8F0"}}>
+                  Total {filterY?year:"alle"} ({visible.length} Buchungen)
+                </td>
+                <td style={{padding:"10px 12px",textAlign:"right",
+                             fontFamily:"'JetBrains Mono',monospace",fontWeight:700,fontSize:14,
+                             borderTop:"2px solid #E2E8F0",color:"#0F172A"}}>
+                  {fmt(total)}
+                </td>
+                <td className="no-print" style={{borderTop:"2px solid #E2E8F0"}}/>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// TAB: KONTENPLAN
+// ═══════════════════════════════════════════════════════════════
+function KontenplanTab({ accounts, setAccounts, entries, getSaldo, year }) {
+  const [form,    setForm]    = useState({number:"",name:"",category:"aktiven",group:""});
+  const [error,   setError]   = useState("");
+  const [open,    setOpen]    = useState(false);
+  const [editing, setEditing] = useState(null); // { number, name, group }
+  const [editErr, setEditErr] = useState("");
+  const [confirmDel, setConfirmDel] = useState(null); // account number pending deletion
+
+  const f = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  const addAccount = () => {
+    if(!form.number.trim()||!form.name.trim()){ setError("Kontonummer und Name sind Pflicht."); return; }
+    if(accounts.find(a=>a.number===form.number.trim())){
+      setError(`Kontonummer ${form.number} existiert bereits.`); return; }
+    setAccounts(p=>[...p,{...form,number:form.number.trim(),name:form.name.trim()}]
+      .sort((a,b)=>a.number.localeCompare(b.number)));
+    setForm({number:"",name:"",category:"aktiven",group:""});
+    setError(""); setOpen(false);
+  };
+
+  const delAccount = (n) => {
+    if(window.confirm(`Konto ${n} löschen? Buchungen bleiben erhalten.`))
+      setAccounts(p=>p.filter(a=>a.number!==n));
+  };
+
+  const startEdit = (a) => {
+    setEditing({ number:a.number, name:a.name, group:a.group||"" });
+    setEditErr("");
+  };
+
+  const saveEdit = () => {
+    if(!editing.name.trim()){ setEditErr("Bezeichnung darf nicht leer sein."); return; }
+    setAccounts(p => p.map(a =>
+      a.number===editing.number
+        ? { ...a, name:editing.name.trim(), group:editing.group.trim() }
+        : a
+    ));
+    setEditing(null); setEditErr("");
+  };
+
+  const cancelEdit = () => { setEditing(null); setEditErr(""); };
+
+  const hasBookings = (num) => entries.some(e=>e.debit===num||e.credit===num);
+
+  const delEditingAccount = (num) => { setConfirmDel(num); };
+
+  const confirmDelAccount = () => {
+    setAccounts(p=>p.filter(a=>a.number!==confirmDel));
+    setEditing(null);
+    setConfirmDel(null);
+  };
+
+  const catCfg = {
+    aktiven: {label:"AKTIVEN",   color:"#1D4ED8", bg:"#EFF6FF", border:"#BFDBFE"},
+    passiven:{label:"PASSIVEN",  color:"#15803D", bg:"#F0FDF4", border:"#BBF7D0"},
+    ertrag:  {label:"ERTRÄGE",   color:"#059669", bg:"#ECFDF5", border:"#A7F3D0"},
+    aufwand: {label:"AUFWÄNDE",  color:"#DC2626", bg:"#FEF2F2", border:"#FECACA"},
+  };
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+        <span style={{fontSize:13,color:"#64748B"}}>{accounts.length} Konten · Kontenrahmen {year}</span>
+        <button onClick={()=>setOpen(s=>!s)} style={PB}>{open?"Abbrechen":"+ Neues Konto"}</button>
+      </div>
+
+      {open && (
+        <Card title="Neues Konto anlegen">
+          <div style={{display:"grid",gridTemplateColumns:"110px 1fr 150px 1fr auto",gap:10,alignItems:"end"}}>
+            <Field label="Konto-Nr. *">
+              <input type="text" value={form.number} onChange={e=>f("number",e.target.value)}
+                placeholder="z.B. 3600" style={IS}/>
+            </Field>
+            <Field label="Bezeichnung *">
+              <input type="text" value={form.name} onChange={e=>f("name",e.target.value)}
+                placeholder="Kontoname" style={IS}/>
+            </Field>
+            <Field label="Kategorie *">
+              <select value={form.category} onChange={e=>f("category",e.target.value)} style={IS}>
+                <option value="aktiven">Aktiven</option>
+                <option value="passiven">Passiven</option>
+                <option value="ertrag">Ertrag</option>
+                <option value="aufwand">Aufwand</option>
+              </select>
+            </Field>
+            <Field label="Gruppe">
+              <input type="text" value={form.group} onChange={e=>f("group",e.target.value)}
+                placeholder="z.B. Vereinserträge" style={IS}/>
+            </Field>
+            <button onClick={addAccount} style={{...PB,height:38}}>Anlegen</button>
+          </div>
+          {error && <div style={{color:"#DC2626",marginTop:8,fontSize:12}}>⚠ {error}</div>}
+        </Card>
+      )}
+
+      {editErr && (
+        <div style={{color:"#DC2626",marginBottom:10,fontSize:12,padding:"6px 10px",
+                     background:"#FEF2F2",borderRadius:5}}>⚠ {editErr}</div>
+      )}
+
+      {["aktiven","passiven","ertrag","aufwand"].map(cat => {
+        const accs = accounts.filter(a=>a.category===cat).sort((a,b)=>a.number.localeCompare(b.number));
+        if(!accs.length) return null;
+        const cfg = catCfg[cat];
+        const total = accs.reduce((s,a)=>s+getSaldo(a.number,year),0);
+        return (
+          <div key={cat} style={{marginBottom:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+              <span style={{fontWeight:800,fontSize:11,color:cfg.color,letterSpacing:1.5}}>
+                {cfg.label}
+              </span>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,
+                            fontWeight:600,color:cfg.color}}>
+                Total: CHF {fmt(total)}
+              </span>
+            </div>
+            <div style={{background:"white",borderRadius:8,border:"1px solid #E2E8F0",overflow:"hidden"}}>
+              <table style={{width:"100%",borderCollapse:"collapse"}}>
+                <thead>
+                  <tr>
+                    <Th style={{width:80}}>Kto-Nr.</Th>
+                    <Th>Bezeichnung</Th>
+                    <Th style={{width:200}}>Gruppe</Th>
+                    <Th align="right" style={{width:140}}>Saldo {year}</Th>
+                    <Th className="no-print" style={{width:90}}/>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accs.map(a => {
+                    const saldo = getSaldo(a.number,year);
+                    const isEditing = editing?.number === a.number;
+
+                    if(isEditing) return (
+                      <tr key={a.number} style={{background:"#FEFCE8",outline:"2px solid #F59E0B",
+                                                  outlineOffset:"-2px"}}>
+                        <Td style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,
+                                    color:cfg.color,fontSize:12}}>{a.number}</Td>
+                        <Td>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={editing.name}
+                            onChange={e=>setEditing(p=>({...p,name:e.target.value}))}
+                            onKeyDown={e=>{ if(e.key==="Enter") saveEdit(); if(e.key==="Escape") cancelEdit(); }}
+                            style={{...IS,padding:"5px 8px",fontSize:13,fontWeight:500,
+                                    borderColor:"#F59E0B",boxShadow:"0 0 0 3px rgba(245,158,11,.15)"}}
+                          />
+                        </Td>
+                        <Td>
+                          <input
+                            type="text"
+                            value={editing.group}
+                            onChange={e=>setEditing(p=>({...p,group:e.target.value}))}
+                            onKeyDown={e=>{ if(e.key==="Enter") saveEdit(); if(e.key==="Escape") cancelEdit(); }}
+                            placeholder="Gruppe…"
+                            style={{...IS,padding:"5px 8px",fontSize:13,
+                                    borderColor:"#F59E0B",boxShadow:"0 0 0 3px rgba(245,158,11,.15)"}}
+                          />
+                        </Td>
+                        <Td align="right" style={{fontFamily:"'JetBrains Mono',monospace",
+                                                   color:"#CBD5E1",fontSize:13}}>
+                          {saldo!==0?fmt(saldo):"—"}
+                        </Td>
+                        <Td className="no-print" align="right">
+                          <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+                            <button onClick={saveEdit}
+                              style={{...PB,padding:"4px 10px",fontSize:12,background:"#16A34A"}}
+                              title="Speichern (Enter)">✓</button>
+                            <button onClick={cancelEdit}
+                              style={{...SB,padding:"4px 10px",fontSize:12}}
+                              title="Abbrechen (Esc)">✕</button>
+                            {!hasBookings(a.number) && confirmDel!==a.number && (
+                              <button onClick={()=>delEditingAccount(a.number)}
+                                style={{...SB,padding:"4px 10px",fontSize:12,
+                                        borderColor:"#FECACA",color:"#EF4444"}}
+                                title="Konto löschen (keine Buchungen vorhanden)">🗑</button>
+                            )}
+                            {!hasBookings(a.number) && confirmDel===a.number && (
+                              <>
+                                <span style={{fontSize:11,color:"#DC2626",whiteSpace:"nowrap",
+                                              alignSelf:"center",fontWeight:600}}>Sicher?</span>
+                                <button onClick={confirmDelAccount}
+                                  style={{...PB,padding:"4px 10px",fontSize:12,background:"#DC2626"}}>
+                                  Ja, löschen
+                                </button>
+                                <button onClick={()=>setConfirmDel(null)}
+                                  style={{...SB,padding:"4px 10px",fontSize:12}}>
+                                  Nein
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </Td>
+                      </tr>
+                    );
+
+                    return (
+                      <tr key={a.number} className="hover-row">
+                        <Td style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,
+                                    color:cfg.color,fontSize:12}}>{a.number}</Td>
+                        <Td>{a.name}</Td>
+                        <Td style={{color:MUTED,fontSize:12}}>{a.group||"—"}</Td>
+                        <Td align="right" style={{fontFamily:"'JetBrains Mono',monospace",
+                                                  fontWeight:saldo!==0?600:400,
+                                                  color:saldo<0?"#DC2626":saldo>0?"#0F172A":"#CBD5E1"}}>
+                          {saldo!==0?fmt(saldo):"—"}
+                        </Td>
+                        <Td className="no-print" align="right">
+                          <div style={{display:"flex",gap:4,justifyContent:"flex-end"}}>
+                            <button onClick={()=>startEdit(a)}
+                              style={{background:"none",border:"none",color:"#CBD5E1",cursor:"pointer",
+                                      fontSize:14,padding:"2px 5px",transition:"color .15s",lineHeight:1}}
+                              onMouseEnter={e=>e.currentTarget.style.color="#F59E0B"}
+                              onMouseLeave={e=>e.currentTarget.style.color="#CBD5E1"}
+                              title="Umbenennen">✏</button>
+                            <button onClick={()=>delAccount(a.number)}
+                              style={{background:"none",border:"none",color:"#CBD5E1",cursor:"pointer",
+                                      fontSize:15,padding:"2px 5px",transition:"color .15s",lineHeight:1}}
+                              onMouseEnter={e=>e.currentTarget.style.color="#EF4444"}
+                              onMouseLeave={e=>e.currentTarget.style.color="#CBD5E1"}
+                              title="Löschen">×</button>
+                          </div>
+                        </Td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TAB: HAUPTBUCH
+// ═══════════════════════════════════════════════════════════════
+function HauptbuchTab({ accounts, entries, year }) {
+  const [selAcc, setSelAcc] = useState("");
+  const [filterY, setFilterY] = useState(true);
+
+  const account = accounts.find(a=>a.number===selAcc);
+  const isDebitNormal = account&&(account.category==="aktiven"||account.category==="aufwand");
+  const catColor = {aktiven:"#1D4ED8",passiven:"#15803D",ertrag:"#059669",aufwand:"#DC2626"};
+
+  const rows = useMemo(()=>{
+    if(!selAcc) return [];
+    let ents = entries.filter(e=>e.debit===selAcc||e.credit===selAcc);
+    if(filterY) ents=ents.filter(e=>e.date.startsWith(String(year)));
+    ents=ents.sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id);
+    let run=0;
+    return ents.map(e=>{
+      const soll  = e.debit===selAcc  ? Number(e.amount) : null;
+      const haben = e.credit===selAcc ? Number(e.amount) : null;
+      run += isDebitNormal ? (soll||0)-(haben||0) : (haben||0)-(soll||0);
+      const counter = e.debit===selAcc ? e.credit : e.debit;
+      return {...e,soll,haben,saldo:run,counter};
+    });
+  },[entries,selAcc,filterY,year,isDebitNormal]);
+
+  const totSoll  = rows.reduce((s,r)=>s+(r.soll||0),0);
+  const totHaben = rows.reduce((s,r)=>s+(r.haben||0),0);
+  const saldo    = rows.length>0 ? rows[rows.length-1].saldo : 0;
+
+  // Alle Konten mit Buchungen (wenn kein Konto ausgewählt)
+  const allAccountRows = useMemo(()=>{
+    if(selAcc) return [];
+    let filteredEntries = entries;
+    if(filterY) filteredEntries=filteredEntries.filter(e=>e.date.startsWith(String(year)));
+    return accounts
+      .slice()
+      .sort((a,b)=>a.number.localeCompare(b.number))
+      .map(acc=>{
+        const accNum = acc.number;
+        const isDbNormal = acc.category==="aktiven"||acc.category==="aufwand";
+        let ents = filteredEntries.filter(e=>e.debit===accNum||e.credit===accNum);
+        if(ents.length===0) return null;
+        ents = ents.sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id);
+        let run=0;
+        const accRows = ents.map(e=>{
+          const soll  = e.debit===accNum  ? Number(e.amount) : null;
+          const haben = e.credit===accNum ? Number(e.amount) : null;
+          run += isDbNormal ? (soll||0)-(haben||0) : (haben||0)-(soll||0);
+          const counter = e.debit===accNum ? e.credit : e.debit;
+          return {...e,soll,haben,saldo:run,counter};
+        });
+        return {
+          account: acc,
+          rows: accRows,
+          totSoll: accRows.reduce((s,r)=>s+(r.soll||0),0),
+          totHaben: accRows.reduce((s,r)=>s+(r.haben||0),0),
+          saldo: accRows.length>0 ? accRows[accRows.length-1].saldo : 0
+        };
+      })
+      .filter(Boolean);
+  },[accounts,entries,selAcc,filterY,year]);
+
+  return (
+    <div>
+      <Card title="Konto auswählen">
+        <div style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:12,alignItems:"end"}}>
+          <Field label="Konto">
+            <AccountSelect accounts={accounts} value={selAcc} onChange={setSelAcc}/>
+          </Field>
+          <label style={{display:"flex",alignItems:"center",gap:5,fontSize:13,color:"#555",
+                         cursor:"pointer",height:38,whiteSpace:"nowrap"}}>
+            <input type="checkbox" checked={filterY} onChange={e=>setFilterY(e.target.checked)}/>
+            Nur {year}
+          </label>
+        </div>
+
+        {account && (
+          <div style={{display:"flex",gap:20,flexWrap:"wrap",marginTop:12,padding:"10px 12px",
+                       background:"#F8FAFC",borderRadius:6,borderLeft:`3px solid ${catColor[account.category]||"#ccc"}`}}>
+            <div>
+              <div style={{fontSize:10,color:MUTED,marginBottom:1}}>Konto</div>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,
+                            color:catColor[account.category]}}>{account.number}</span>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:MUTED,marginBottom:1}}>Bezeichnung</div>
+              <span style={{fontWeight:600}}>{account.name}</span>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:MUTED,marginBottom:1}}>Kategorie</div>
+              <Badge cat={account.category}/>
+            </div>
+            <div>
+              <div style={{fontSize:10,color:MUTED,marginBottom:1}}>Normalsaldo</div>
+              <span style={{fontSize:12,color:"#64748B"}}>
+                {isDebitNormal?"Soll (Debit)":"Haben (Kredit)"}
+              </span>
+            </div>
+            <div style={{marginLeft:"auto",textAlign:"right"}}>
+              <div style={{fontSize:10,color:MUTED,marginBottom:1}}>Aktueller Saldo</div>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,fontSize:17,
+                            color:saldo>=0?"#0F172A":"#DC2626"}}>
+                CHF {fmt(saldo)}
+              </span>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {selAcc ? (
+        <div style={{background:"white",borderRadius:10,border:"1px solid #E2E8F0",
+                     overflow:"auto",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <thead>
+              <tr>
+                <Th>Datum</Th>
+                <Th>Belegnr.</Th>
+                <Th>Buchungstext</Th>
+                <Th>Gegenkonto</Th>
+                <Th align="right" style={{color:"#1D4ED8"}}>Soll</Th>
+                <Th align="right" style={{color:"#059669"}}>Haben</Th>
+                <Th align="right">Saldo</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length===0 ? (
+                <tr><td colSpan={7} style={{padding:32,textAlign:"center",color:MUTED,fontStyle:"italic"}}>
+                  Keine Buchungen für dieses Konto
+                </td></tr>
+              ) : rows.map(r=>{
+                const cAcc = accounts.find(a=>a.number===r.counter);
+                return (
+                  <tr key={r.id} className="hover-row">
+                    <Td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"#475569"}}>{r.date}</Td>
+                    <Td style={{color:MUTED,fontSize:12}}>{r.reference||"—"}</Td>
+                    <Td>{r.description}</Td>
+                    <Td style={{fontSize:12}}>
+                      <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:"#64748B"}}>{r.counter}</span>
+                      {cAcc&&<span style={{color:MUTED,marginLeft:5}}>{cAcc.name}</span>}
+                    </Td>
+                    <Td align="right"
+                      style={{fontFamily:"'JetBrains Mono',monospace",
+                              color:r.soll?"#1D4ED8":"#E2E8F0",fontWeight:r.soll?500:400}}>
+                      {r.soll?fmt(r.soll):"—"}
+                    </Td>
+                    <Td align="right"
+                      style={{fontFamily:"'JetBrains Mono',monospace",
+                              color:r.haben?"#059669":"#E2E8F0",fontWeight:r.haben?500:400}}>
+                      {r.haben?fmt(r.haben):"—"}
+                    </Td>
+                    <Td align="right"
+                      style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,
+                              color:r.saldo>=0?"#0F172A":"#DC2626"}}>
+                      {fmt(r.saldo)}
+                    </Td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            {rows.length>0&&(
+              <tfoot>
+                <tr style={{background:"#F8FAFC"}}>
+                  <td colSpan={4} style={{padding:"10px 12px",fontWeight:700,fontSize:13,
+                                          borderTop:"2px solid #E2E8F0"}}>Total</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                               fontWeight:700,color:"#1D4ED8",borderTop:"2px solid #E2E8F0"}}>{fmt(totSoll)}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                               fontWeight:700,color:"#059669",borderTop:"2px solid #E2E8F0"}}>{fmt(totHaben)}</td>
+                  <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                               fontWeight:700,fontSize:14,borderTop:"2px solid #E2E8F0",
+                               color:saldo>=0?"#0F172A":"#DC2626"}}>{fmt(saldo)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      ) : (
+        <div>
+          {allAccountRows.length===0 ? (
+            <div style={{padding:32,textAlign:"center",color:MUTED,fontStyle:"italic"}}>
+              Keine Buchungen vorhanden
+            </div>
+          ) : allAccountRows.map(g=>(
+            <div key={g.account.number} style={{marginBottom:20}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",
+                           background:"#F8FAFC",borderRadius:"8px 8px 0 0",
+                           borderLeft:`4px solid ${catColor[g.account.category]||"#ccc"}`,
+                           borderBottom:"1px solid #E2E8F0"}}>
+                <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:700,fontSize:14,
+                              color:catColor[g.account.category]||"#333"}}>{g.account.number}</span>
+                <span style={{fontWeight:600,fontSize:14}}>{g.account.name}</span>
+                <Badge cat={g.account.category}/>
+                <span style={{marginLeft:"auto",fontFamily:"'JetBrains Mono',monospace",fontWeight:700,
+                              color:g.saldo>=0?"#0F172A":"#DC2626"}}>
+                  CHF {fmt(g.saldo)}
+                </span>
+              </div>
+              <div style={{background:"white",borderRadius:"0 0 10px 10px",border:"1px solid #E2E8F0",
+                           borderTop:"none",overflow:"auto",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+                <table style={{width:"100%",borderCollapse:"collapse"}}>
+                  <thead>
+                    <tr>
+                      <Th>Datum</Th>
+                      <Th>Belegnr.</Th>
+                      <Th>Buchungstext</Th>
+                      <Th>Gegenkonto</Th>
+                      <Th align="right" style={{color:"#1D4ED8"}}>Soll</Th>
+                      <Th align="right" style={{color:"#059669"}}>Haben</Th>
+                      <Th align="right">Saldo</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.rows.map(r=>{
+                      const cAcc = accounts.find(a=>a.number===r.counter);
+                      return (
+                        <tr key={r.id} className="hover-row">
+                          <Td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,color:"#475569"}}>{r.date}</Td>
+                          <Td style={{color:MUTED,fontSize:12}}>{r.reference||"—"}</Td>
+                          <Td>{r.description}</Td>
+                          <Td style={{fontSize:12}}>
+                            <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,color:"#64748B"}}>{r.counter}</span>
+                            {cAcc&&<span style={{color:MUTED,marginLeft:5}}>{cAcc.name}</span>}
+                          </Td>
+                          <Td align="right"
+                            style={{fontFamily:"'JetBrains Mono',monospace",
+                                    color:r.soll?"#1D4ED8":"#E2E8F0",fontWeight:r.soll?500:400}}>
+                            {r.soll?fmt(r.soll):"—"}
+                          </Td>
+                          <Td align="right"
+                            style={{fontFamily:"'JetBrains Mono',monospace",
+                                    color:r.haben?"#059669":"#E2E8F0",fontWeight:r.haben?500:400}}>
+                            {r.haben?fmt(r.haben):"—"}
+                          </Td>
+                          <Td align="right"
+                            style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:600,
+                                    color:r.saldo>=0?"#0F172A":"#DC2626"}}>
+                            {fmt(r.saldo)}
+                          </Td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr style={{background:"#F8FAFC"}}>
+                      <td colSpan={4} style={{padding:"10px 12px",fontWeight:700,fontSize:13,
+                                              borderTop:"2px solid #E2E8F0"}}>Total</td>
+                      <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                                   fontWeight:700,color:"#1D4ED8",borderTop:"2px solid #E2E8F0"}}>{fmt(g.totSoll)}</td>
+                      <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                                   fontWeight:700,color:"#059669",borderTop:"2px solid #E2E8F0"}}>{fmt(g.totHaben)}</td>
+                      <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                                   fontWeight:700,fontSize:14,borderTop:"2px solid #E2E8F0",
+                                   color:g.saldo>=0?"#0F172A":"#DC2626"}}>{fmt(g.saldo)}</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TAB: BILANZ
+// ═══════════════════════════════════════════════════════════════
+function BilanzTab({ accounts, getSaldo, year }) {
+  const aktiven  = accounts.filter(a=>a.category==="aktiven").sort((a,b)=>a.number.localeCompare(b.number));
+  const passiven = accounts.filter(a=>a.category==="passiven").sort((a,b)=>a.number.localeCompare(b.number));
+  const ertraege = accounts.filter(a=>a.category==="ertrag").reduce((s,a)=>s+getSaldo(a.number,year),0);
+  const aufwaende= accounts.filter(a=>a.category==="aufwand").reduce((s,a)=>s+getSaldo(a.number,year),0);
+  const jahrRes  = ertraege - aufwaende;
+
+  const totalAkt = aktiven.reduce((s,a)=>s+getSaldo(a.number,year),0);
+  const totalPas = passiven.reduce((s,a)=>s+getSaldo(a.number,year),0)+jahrRes;
+  const diff = Math.abs(totalAkt-totalPas);
+  const balanced = diff < 0.01;
+
+  const aktGroups = [...new Set(aktiven.map(a=>a.group))];
+  const pasGroups = [...new Set(passiven.map(a=>a.group))];
+
+  const SideSection = ({ accs, group, color }) => {
+    const ga = accs.filter(a=>a.group===group);
+    const gt = ga.reduce((s,a)=>s+getSaldo(a.number,year),0);
+    return (
+      <>
+        <tr>
+          <td colSpan={3} style={{padding:"8px 12px 3px",fontWeight:700,fontSize:10.5,
+                                   color:"#64748B",textTransform:"uppercase",letterSpacing:.5}}>
+            {group}
+          </td>
+        </tr>
+        {ga.map(a=>{
+          const s=getSaldo(a.number,year);
+          return (
+            <tr key={a.number} className="hover-row">
+              <td style={{padding:"4px 12px 4px 22px",fontSize:11.5,
+                          fontFamily:"'JetBrains Mono',monospace",color:MUTED}}>{a.number}</td>
+              <td style={{padding:"4px 12px",fontSize:13}}>{a.name}</td>
+              <td style={{padding:"4px 12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                          fontSize:13,fontWeight:s!==0?500:400,color:s!==0?"#0F172A":"#CBD5E1"}}>
+                {s!==0?fmt(s):"—"}
+              </td>
+            </tr>
+          );
+        })}
+        <tr style={{borderBottom:"1px solid #E2E8F0"}}>
+          <td colSpan={2} style={{padding:"3px 12px 7px 22px",fontSize:11.5,color:MUTED,fontStyle:"italic"}}>
+            Subtotal {group}
+          </td>
+          <td style={{padding:"3px 12px 7px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                      fontSize:13,fontWeight:600,color}}>{fmt(gt)}</td>
+        </tr>
+      </>
+    );
+  };
+
+  const exportBilanzWord = () => {
+    const renderSide = (title, accs, groups, color, total) => {
+      let h = `<table><tr><th colspan="3" style="background:${color}11;color:${color};font-size:11pt">${title}</th></tr>`;
+      groups.forEach(group => {
+        const ga = accs.filter(a=>a.group===group);
+        const gt = ga.reduce((s,a)=>s+getSaldo(a.number,year),0);
+        h += `<tr class="section-header"><td colspan="3">${group}</td></tr>`;
+        ga.forEach(a => {
+          const s = getSaldo(a.number,year);
+          h += `<tr><td class="muted" style="width:60pt">${a.number}</td><td>${a.name}</td><td class="amount">${s!==0?fmt(s):"—"}</td></tr>`;
+        });
+        h += `<tr><td colspan="2" class="subtotal">Subtotal ${group}</td><td class="amount" style="font-weight:600;color:${color}">${fmt(gt)}</td></tr>`;
+      });
+      h += `<tr class="total-row" style="color:${color}"><td colspan="2">TOTAL ${title}</td><td class="amount">CHF ${fmt(total)}</td></tr></table>`;
+      return h;
+    };
+    let html = `<h1>Verein Werckmeister</h1><h2>Bilanz per 31. Dezember ${year}</h2>`;
+    html += `<table style="border:none"><tr style="vertical-align:top"><td style="border:none;width:50%;padding-right:8pt">`;
+    html += renderSide("AKTIVEN", aktiven, aktGroups, "#1D4ED8", totalAkt);
+    html += `</td><td style="border:none;width:50%;padding-left:8pt">`;
+    let pasHtml = renderSide("PASSIVEN", passiven, pasGroups, "#15803D", totalPas);
+    // Jahresergebnis einfügen vor dem letzten </table>
+    const jrRow = `<tr class="section-header"><td colspan="3">Jahresergebnis ${year}</td></tr>` +
+      `<tr><td class="muted">2900</td><td>${jahrRes>=0?"Jahresgewinn":"Jahresverlust"} ${year}</td>` +
+      `<td class="amount" style="font-weight:700;color:${jahrRes>=0?"#15803D":"#DC2626"}">${jahrRes>=0?"":"-"}${fmt(Math.abs(jahrRes))}</td></tr>`;
+    pasHtml = pasHtml.replace(/<tr class="total-row"/, jrRow + `<tr class="total-row"`);
+    html += pasHtml;
+    html += `</td></tr></table>`;
+    exportWord(html, `Werckmeister_Bilanz_${year}.docx`);
+  };
+
+  return (
+    <div>
+      <div className="no-print" style={{display:"flex",justifyContent:"space-between",
+                                        alignItems:"center",marginBottom:16}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:13,color:"#64748B"}}>Bilanz per 31. Dezember {year}</span>
+          {balanced
+            ? <span style={{background:"#F0FDF4",color:"#15803D",padding:"2px 9px",
+                            borderRadius:999,fontSize:11,fontWeight:600}}>✓ Ausgeglichen</span>
+            : <span style={{background:"#FEF2F2",color:"#DC2626",padding:"2px 9px",
+                            borderRadius:999,fontSize:11,fontWeight:600}}>
+                Differenz CHF {fmt(diff)}
+              </span>
+          }
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={exportBilanzWord} style={SB}>📄 Word Export</button>
+          <button onClick={()=>window.print()} style={SB}>🖨 Drucken / PDF</button>
+        </div>
+      </div>
+
+      {/* Print header */}
+      <div style={{textAlign:"center",marginBottom:20}}>
+        <div style={{fontWeight:800,fontSize:18,letterSpacing:-.5}}>Verein Werckmeister</div>
+        <div style={{color:"#64748B",fontSize:13,marginTop:3}}>Bilanz per 31. Dezember {year}</div>
+        <div style={{color:MUTED,fontSize:11,marginTop:1}}>Schweizer Vereins-Kontenrahmen · Doppelte Buchhaltung</div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+        {/* AKTIVEN */}
+        <div style={{background:"white",borderRadius:10,border:"1px solid #BFDBFE",overflow:"hidden",
+                     boxShadow:"0 1px 4px rgba(29,78,216,.08)"}}>
+          <div style={{padding:"11px 14px",background:"#EFF6FF",borderBottom:"1px solid #BFDBFE",
+                       fontWeight:800,fontSize:13,color:"#1D4ED8",letterSpacing:.5}}>
+            AKTIVEN
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <tbody>
+              {aktGroups.map(g=><SideSection key={g} accs={aktiven} group={g} color="#1D4ED8"/>)}
+            </tbody>
+            <tfoot>
+              <tr style={{background:"#EFF6FF",borderTop:"2px solid #1D4ED8"}}>
+                <td colSpan={2} style={{padding:"12px",fontWeight:800,fontSize:14,color:"#1D4ED8"}}>
+                  TOTAL AKTIVEN
+                </td>
+                <td style={{padding:"12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                             fontWeight:800,fontSize:15,color:"#1D4ED8"}}>
+                  CHF {fmt(totalAkt)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        {/* PASSIVEN */}
+        <div style={{background:"white",borderRadius:10,border:"1px solid #BBF7D0",overflow:"hidden",
+                     boxShadow:"0 1px 4px rgba(21,128,61,.08)"}}>
+          <div style={{padding:"11px 14px",background:"#F0FDF4",borderBottom:"1px solid #BBF7D0",
+                       fontWeight:800,fontSize:13,color:"#15803D",letterSpacing:.5}}>
+            PASSIVEN
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse"}}>
+            <tbody>
+              {pasGroups.map(g=><SideSection key={g} accs={passiven} group={g} color="#15803D"/>)}
+              {/* Jahresergebnis */}
+              <tr>
+                <td colSpan={3} style={{padding:"8px 12px 3px",fontWeight:700,fontSize:10.5,
+                                         color:"#64748B",textTransform:"uppercase",letterSpacing:.5}}>
+                  Jahresergebnis {year}
+                </td>
+              </tr>
+              <tr style={{borderBottom:"1px solid #E2E8F0"}}>
+                <td style={{padding:"4px 12px 7px 22px",fontSize:11.5,
+                             fontFamily:"'JetBrains Mono',monospace",color:MUTED}}>2900</td>
+                <td style={{padding:"4px 12px 7px",fontSize:13}}>
+                  {jahrRes>=0?"Jahresgewinn":"Jahresverlust"} {year}
+                </td>
+                <td style={{padding:"4px 12px 7px",textAlign:"right",
+                             fontFamily:"'JetBrains Mono',monospace",fontSize:13,fontWeight:700,
+                             color:jahrRes>=0?"#15803D":"#DC2626"}}>
+                  {jahrRes>=0?"":"-"}{fmt(Math.abs(jahrRes))}
+                </td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr style={{background:"#F0FDF4",borderTop:"2px solid #15803D"}}>
+                <td colSpan={2} style={{padding:"12px",fontWeight:800,fontSize:14,color:"#15803D"}}>
+                  TOTAL PASSIVEN
+                </td>
+                <td style={{padding:"12px",textAlign:"right",fontFamily:"'JetBrains Mono',monospace",
+                             fontWeight:800,fontSize:15,color:"#15803D"}}>
+                  CHF {fmt(totalPas)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+
+      {!balanced&&(
+        <div style={{marginTop:12,padding:"8px 12px",background:"#FEF2F2",borderRadius:6,
+                     fontSize:12,color:"#DC2626",border:"1px solid #FECACA"}}>
+          ⚠ Die Bilanz ist um CHF {fmt(diff)} nicht ausgeglichen. Prüfe die Eröffnungsbuchungen.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// TAB: ERFOLGSRECHNUNG
+// ═══════════════════════════════════════════════════════════════
+function ErfolgsrechnungTab({ accounts, getSaldo, year }) {
+  const erAccs = accounts.filter(a=>a.category==="ertrag" ).sort((a,b)=>a.number.localeCompare(b.number));
+  const awAccs = accounts.filter(a=>a.category==="aufwand").sort((a,b)=>a.number.localeCompare(b.number));
+  const totEr  = erAccs.reduce((s,a)=>s+getSaldo(a.number,year),0);
+  const totAw  = awAccs.reduce((s,a)=>s+getSaldo(a.number,year),0);
+  const jahrRes= totEr - totAw;
+
+  const erGroups = [...new Set(erAccs.map(a=>a.group))];
+  const awGroups = [...new Set(awAccs.map(a=>a.group))];
+
+  const Section = ({ accs, groups, title, color, bg, border }) => (
+    <div style={{background:"white",borderRadius:10,border:`1px solid ${border}`,
+                 overflow:"hidden",boxShadow:"0 1px 3px rgba(0,0,0,.05)",marginBottom:14}}>
+      <div style={{padding:"11px 16px",background:bg,borderBottom:`1px solid ${border}`,
+                   fontWeight:800,fontSize:13,color,letterSpacing:.5}}>
+        {title}
+      </div>
+      <table style={{width:"100%",borderCollapse:"collapse"}}>
+        <tbody>
+          {groups.map(group=>{
+            const ga = accs.filter(a=>a.group===group);
+            const gt = ga.reduce((s,a)=>s+getSaldo(a.number,year),0);
+            return (
+              <Fragment key={group}>
+                <tr>
+                  <td colSpan={3} style={{padding:"7px 16px 3px",fontWeight:700,fontSize:10.5,
+                                           color:"#64748B",textTransform:"uppercase",letterSpacing:.5}}>
+                    {group}
+                  </td>
+                </tr>
+                {ga.map(a=>{
+                  const s=getSaldo(a.number,year);
+                  return (
+                    <tr key={a.number} className="hover-row">
+                      <td style={{padding:"4px 16px 4px 26px",fontSize:11.5,
+                                  fontFamily:"'JetBrains Mono',monospace",color:MUTED,width:60}}>{a.number}</td>
+                      <td style={{padding:"4px 16px",fontSize:13}}>{a.name}</td>
+                      <td style={{padding:"4px 16px",textAlign:"right",
+                                  fontFamily:"'JetBrains Mono',monospace",fontSize:13,
+                                  fontWeight:s!==0?500:400,color:s!==0?"#0F172A":"#CBD5E1"}}>
+                        {s!==0?fmt(s):"—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+                <tr style={{borderBottom:"1px solid #E2E8F0"}}>
+                  <td colSpan={2} style={{padding:"3px 16px 7px 26px",
+                                          fontSize:11.5,color:MUTED,fontStyle:"italic"}}>
+                    Subtotal {group}
+                  </td>
+                  <td style={{padding:"3px 16px 7px",textAlign:"right",
+                               fontFamily:"'JetBrains Mono',monospace",fontSize:13,
+                               fontWeight:600,color}}>{fmt(gt)}</td>
+                </tr>
+              </Fragment>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr style={{background:bg,borderTop:`2px solid ${color}`}}>
+            <td colSpan={2} style={{padding:"12px 16px",fontWeight:800,fontSize:14,color}}>
+              TOTAL {title}
+            </td>
+            <td style={{padding:"12px 16px",textAlign:"right",
+                         fontFamily:"'JetBrains Mono',monospace",fontWeight:800,fontSize:15,color}}>
+              CHF {fmt(accs===erAccs?totEr:totAw)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+
+  const exportERWord = () => {
+    const renderSection = (title, accs, groups, color, total) => {
+      let h = `<table><tr><th colspan="3" style="background:${color}11;color:${color};font-size:11pt">${title}</th></tr>`;
+      groups.forEach(group => {
+        const ga = accs.filter(a=>a.group===group);
+        const gt = ga.reduce((s,a)=>s+getSaldo(a.number,year),0);
+        h += `<tr class="section-header"><td colspan="3">${group}</td></tr>`;
+        ga.forEach(a => {
+          const s = getSaldo(a.number,year);
+          h += `<tr><td class="muted" style="width:60pt">${a.number}</td><td>${a.name}</td><td class="amount">${s!==0?fmt(s):"—"}</td></tr>`;
+        });
+        h += `<tr><td colspan="2" class="subtotal">Subtotal ${group}</td><td class="amount" style="font-weight:600;color:${color}">${fmt(gt)}</td></tr>`;
+      });
+      h += `<tr class="total-row" style="color:${color}"><td colspan="2">TOTAL ${title}</td><td class="amount">CHF ${fmt(total)}</td></tr></table>`;
+      return h;
+    };
+    let html = `<h1>Verein Werckmeister</h1><h2>Erfolgsrechnung ${year} · 1. Januar – 31. Dezember</h2>`;
+    html += renderSection("ERTRÄGE", erAccs, erGroups, "#059669", totEr);
+    html += renderSection("AUFWÄNDE", awAccs, awGroups, "#DC2626", totAw);
+    const resColor = jahrRes>=0 ? "#15803D" : "#DC2626";
+    html += `<table><tr class="total-row" style="color:${resColor}"><td colspan="2" style="font-size:12pt">${jahrRes>=0?"JAHRESGEWINN":"JAHRESVERLUST"} ${year}</td>` +
+      `<td class="amount" style="font-size:14pt">CHF ${fmt(Math.abs(jahrRes))}</td></tr>` +
+      `<tr><td colspan="3" class="muted" style="font-size:9pt;border:none">Erträge ${fmt(totEr)} – Aufwände ${fmt(totAw)}</td></tr></table>`;
+    exportWord(html, `Werckmeister_Erfolgsrechnung_${year}.docx`);
+  };
+
+  return (
+    <div>
+      <div className="no-print" style={{display:"flex",justifyContent:"space-between",
+                                        alignItems:"center",marginBottom:16}}>
+        <span style={{fontSize:13,color:"#64748B"}}>
+          Erfolgsrechnung {year} · 1. Januar – 31. Dezember
+        </span>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={exportERWord} style={SB}>📄 Word Export</button>
+          <button onClick={()=>window.print()} style={SB}>🖨 Drucken / PDF</button>
+        </div>
+      </div>
+
+      <div style={{textAlign:"center",marginBottom:20}}>
+        <div style={{fontWeight:800,fontSize:18,letterSpacing:-.5}}>Verein Werckmeister</div>
+        <div style={{color:"#64748B",fontSize:13,marginTop:3}}>Erfolgsrechnung {year}</div>
+      </div>
+
+      <div style={{maxWidth:720,margin:"0 auto"}}>
+        <Section accs={erAccs} groups={erGroups} title="ERTRÄGE"
+          color="#059669" bg="#ECFDF5" border="#A7F3D0"/>
+        <Section accs={awAccs} groups={awGroups} title="AUFWÄNDE"
+          color="#DC2626" bg="#FEF2F2" border="#FECACA"/>
+
+        {/* Jahresergebnis box */}
+        <div style={{
+          background: jahrRes>=0?"#F0FDF4":"#FEF2F2",
+          border:`2px solid ${jahrRes>=0?"#16A34A":"#DC2626"}`,
+          borderRadius:10, padding:"16px 20px",
+          display:"flex",justifyContent:"space-between",alignItems:"center",
+          boxShadow:"0 2px 8px rgba(0,0,0,.07)",
+        }}>
+          <div>
+            <div style={{fontWeight:800,fontSize:16,
+                         color:jahrRes>=0?"#15803D":"#DC2626",letterSpacing:.3}}>
+              {jahrRes>=0?"JAHRESGEWINN":"JAHRESVERLUST"} {year}
+            </div>
+            <div style={{fontSize:12,color:MUTED,marginTop:3}}>
+              Erträge {fmt(totEr)} – Aufwände {fmt(totAw)}
+            </div>
+          </div>
+          <div style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:800,fontSize:22,
+                       color:jahrRes>=0?"#15803D":"#DC2626"}}>
+            CHF {fmt(Math.abs(jahrRes))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════════════
+// TAB: BUCHUNGSASSISTENT (Claude AI)
+// ═══════════════════════════════════════════════════════════════
+function AssistentTab({ accounts, setEntries, year }) {
+  // ── Single-beleg state ──────────────────────────────────────
+  const [mode,       setMode]       = useState("single"); // "single" | "csv"
+  const [text,       setText]       = useState("");
+  const [file,       setFile]       = useState(null);
+  const [fileB64,    setFileB64]    = useState(null);
+  const [fileMime,   setFileMime]   = useState(null);
+  const [fileName,   setFileName]   = useState("");
+  const [loading,    setLoading]    = useState(false);
+  const [suggestion, setSuggestion] = useState(null);
+  const [booked,     setBooked]     = useState(false);
+  const [error,      setError]      = useState("");
+
+  // ── CSV state ──────────────────────────────────────────────
+  const [csvRows,    setCsvRows]    = useState([]); // parsed raw rows
+  const [csvResults, setCsvResults] = useState([]); // [{...row, suggestion, selected, booked}]
+  const [csvLoading, setCsvLoading] = useState(false);
+  const [csvDone,    setCsvDone]    = useState(false);
+
+  const accountList = accounts
+    .sort((a,b)=>a.number.localeCompare(b.number))
+    .map(a=>`${a.number} – ${a.name} (${a.category})`)
+    .join("\n");
+
+  const systemPrompt = `Du bist ein Schweizer Vereinsbuchhalter (doppelte Buchhaltung, Schweizer Kontenrahmen).
+Verfügbare Konten:
+${accountList}
+
+Regeln:
+- Bankkonto der Vereinskarte = Konto 1020
+- Negative Beträge = Geld fliesst aus Bankkonto heraus → Konto 1020 ist HABEN (Kredit)
+- Positive Beträge = Geld fliesst ins Bankkonto → Konto 1020 ist SOLL (Debit)
+- Bei privat vorgeschossenen Ausgaben: Haben = 2010 (Kontokorrent mahal)
+- Nur Kontonummern verwenden die im Kontenplan vorkommen
+- Betrag immer als positive Zahl
+- Kein Markdown, nur reines JSON`;
+
+  // ── Single beleg handlers ───────────────────────────────────
+  const handleFile = (e) => {
+    const f = e.target.files[0]; if(!f) return;
+    setFileName(f.name);
+    const mime = f.type||(f.name.endsWith(".pdf")?"application/pdf":"image/jpeg");
+    setFileMime(mime);
+    const reader = new FileReader();
+    reader.onload = ev => { setFileB64(ev.target.result.split(",")[1]); setFile(f); };
+    reader.readAsDataURL(f);
+    e.target.value="";
+  };
+  const removeFile = () => { setFile(null); setFileB64(null); setFileMime(null); setFileName(""); };
+
+  const analyse = async () => {
+    if(!text.trim()&&!fileB64){ setError("Bitte Beleg beschreiben oder Datei hochladen."); return; }
+    setError(""); setLoading(true); setSuggestion(null); setBooked(false);
+    const userContent = [];
+    if(fileB64&&fileMime) {
+      userContent.push(fileMime==="application/pdf"
+        ? {type:"document",source:{type:"base64",media_type:"application/pdf",data:fileB64}}
+        : {type:"image",source:{type:"base64",media_type:fileMime,data:fileB64}});
+    }
+    userContent.push({type:"text",text: text.trim()||"Analysiere diesen Beleg und schlage eine Buchung vor."});
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          system: systemPrompt+"\n\nAntworte NUR mit einem JSON-Objekt:\n{\"date\":\"YYYY-MM-DD\",\"description\":\"...\",\"reference\":\"...\",\"debit\":\"NNNN\",\"credit\":\"NNNN\",\"amount\":0.00,\"reasoning\":\"...\"}",
+          messages:[{role:"user",content:userContent}]
+        })
+      });
+      const data = await res.json();
+      if(data.error) throw new Error(data.error.message||"API-Fehler");
+      const raw = data.content?.map(b=>b.text||"").join("").trim();
+      if(!raw) throw new Error("Keine Antwort von der API erhalten");
+      const parsed = JSON.parse(raw.replace(/^```json\s*/,"").replace(/```\s*$/,"").trim());
+      setSuggestion(parsed);
+    } catch(err){ setError("Fehler: "+err.message); }
+    setLoading(false);
+  };
+
+  const bookSingle = () => {
+    if(!suggestion) return;
+    setEntries(p=>[...p,{id:Date.now(),date:suggestion.date,description:suggestion.description,
+      reference:suggestion.reference||"",debit:suggestion.debit,credit:suggestion.credit,
+      amount:Number(suggestion.amount)}]);
+    setBooked(true);
+  };
+
+  const resetSingle = () => { setText(""); removeFile(); setSuggestion(null); setBooked(false); setError(""); };
+
+  // ── CSV handlers ────────────────────────────────────────────
+  const handleCsv = (e) => {
+    const f = e.target.files[0]; if(!f) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const lines = ev.target.result.split(/\r?\n/).filter(Boolean);
+      const header = lines[0].split(";").map(h=>h.replace(/"/g,"").trim());
+      const rows = lines.slice(1).map(line=>{
+        const cols = line.split(";").map(c=>c.replace(/"/g,"").trim());
+        const obj = {};
+        header.forEach((h,i)=>{ obj[h]=cols[i]||""; });
+        return obj;
+      }).filter(r=>r.Date&&r.Amount&&r.Amount!=="");
+      setCsvRows(rows);
+      setCsvResults(rows.map(r=>({...r,suggestion:null,selected:true,booked:false,error:""})));
+      setCsvDone(false);
+    };
+    reader.readAsText(f,"utf-8");
+    e.target.value="";
+  };
+
+  const analyseCsv = async () => {
+    if(!csvRows.length) return;
+    setCsvLoading(true);
+    // Send all rows to Claude in one call
+    const rowsText = csvRows.map((r,i)=>
+      `${i+1}. Datum: ${r.Date}, Betrag: ${r.Amount} CHF, Beschreibung: "${r.Description||""}", Verwendungszweck: "${r.Subject||""}", Kategorie: "${r.Category||""}"`
+    ).join("\n");
+
+    const prompt = `Analysiere diese ${csvRows.length} Banktransaktionen vom Vereinskonto (Konto 1020 Bankkonto) und schlage für jede eine doppelte Buchung vor.
+
+Transaktionen:
+${rowsText}
+
+Antworte NUR mit einem JSON-Array, ein Objekt pro Transaktion in derselben Reihenfolge:
+[{"date":"YYYY-MM-DD","description":"kurzer Buchungstext","reference":"","debit":"NNNN","credit":"NNNN","amount":0.00,"reasoning":"kurze Begründung"}]`;
+
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages",{
+        method:"POST", headers:{"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:4000,
+          system: systemPrompt,
+          messages:[{role:"user",content:prompt}]
+        })
+      });
+      const data = await res.json();
+      if(data.error) throw new Error(data.error.message||"API-Fehler");
+      const raw = data.content?.map(b=>b.text||"").join("").trim();
+      if(!raw) throw new Error("Keine Antwort von der API erhalten");
+      const parsed = JSON.parse(raw.replace(/^```json\s*/,"").replace(/```\s*$/,"").trim());
+      setCsvResults(prev=>prev.map((r,i)=>({...r,suggestion:parsed[i]||null})));
+      setCsvDone(true);
+    } catch(err){ setError("CSV-Analyse Fehler: "+err.message); }
+    setCsvLoading(false);
+  };
+
+  const bookSelected = () => {
+    const toBook = csvResults.filter(r=>r.selected&&r.suggestion&&!r.booked);
+    const newEntries = toBook.map(r=>({
+      id: Date.now()+Math.random(),
+      date: r.suggestion.date,
+      description: r.suggestion.description,
+      reference: r.suggestion.reference||"",
+      debit: r.suggestion.debit,
+      credit: r.suggestion.credit,
+      amount: Number(r.suggestion.amount),
+    }));
+    setEntries(p=>[...p,...newEntries]);
+    setCsvResults(prev=>prev.map(r=>r.selected&&r.suggestion&&!r.booked?{...r,booked:true}:r));
+  };
+
+  const toggleRow = (i) => setCsvResults(prev=>prev.map((r,j)=>j===i?{...r,selected:!r.selected}:r));
+  const toggleAll = (v) => setCsvResults(prev=>prev.map(r=>({...r,selected:v})));
+  const updateSugg = (i,k,v) => setCsvResults(prev=>prev.map((r,j)=>j===i?{...r,suggestion:{...r.suggestion,[k]:v}}:r));
+
+  const accName = n => accounts.find(a=>a.number===n)?.name||"—";
+  const catColor = {aktiven:"#1D4ED8",passiven:"#15803D",ertrag:"#059669",aufwand:"#DC2626"};
+  const accColor = n => { const a=accounts.find(x=>x.number===n); return a?catColor[a.category]:MUTED; };
+  const selectedCount = csvResults.filter(r=>r.selected&&r.suggestion&&!r.booked).length;
+  const bookedCount   = csvResults.filter(r=>r.booked).length;
+
+  return (
+    <div style={{maxWidth:900,margin:"0 auto"}}>
+      {/* Header */}
+      <div style={{background:"linear-gradient(135deg,#0F2460,#1e3a8a)",borderRadius:12,
+                   padding:"20px 24px",marginBottom:20,color:"white"}}>
+        <div style={{fontWeight:800,fontSize:17,letterSpacing:-.3}}>🤖 Buchungsassistent</div>
+        <div style={{fontSize:12,opacity:.7,marginTop:4}}>
+          Einzelbeleg beschreiben oder hochladen — oder Kontoauszug als CSV importieren
+        </div>
+      </div>
+
+      {/* Mode switcher */}
+      <div style={{display:"flex",gap:0,marginBottom:20,background:"white",borderRadius:8,
+                   border:"1px solid #E2E8F0",padding:4,width:"fit-content"}}>
+        {[["single","📎 Einzelbeleg"],["csv","📊 CSV-Kontoauszug"]].map(([m,label])=>(
+          <button key={m} onClick={()=>setMode(m)} style={{
+            padding:"7px 18px",border:"none",borderRadius:6,cursor:"pointer",
+            fontSize:13,fontWeight:mode===m?700:400,fontFamily:"inherit",
+            background:mode===m?"#0F2460":"transparent",
+            color:mode===m?"white":"#64748B",transition:"all .15s"
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* ── SINGLE MODE ── */}
+      {mode==="single" && !suggestion && !booked && (
+        <Card title="Beleg eingeben">
+          <Field label="Beleg beschreiben (auf Deutsch)">
+            <textarea value={text} onChange={e=>setText(e.target.value)}
+              placeholder={"z.B. «Rechnung Raskin Apps vom 31.8.2025, CHF 88'500, Ideation mit Buyout, langfristiges Darlehen»\noder «Wohnsitzbestätigung Stadt Zürich, CHF 20, von mahal privat bezahlt, Belegnr. 391090»"}
+              style={{...IS,height:100,resize:"vertical",lineHeight:1.5,fontSize:13}}/>
+          </Field>
+          <div style={{marginTop:12}}>
+            <label style={{display:"block",fontSize:10.5,fontWeight:700,color:"#64748B",
+                           marginBottom:6,textTransform:"uppercase",letterSpacing:.6}}>
+              Oder Beleg hochladen (PDF / Bild)
+            </label>
+            {!file ? (
+              <label style={{display:"flex",flexDirection:"column",alignItems:"center",gap:6,
+                             padding:"22px 16px",border:"2px dashed #CBD5E1",borderRadius:8,
+                             cursor:"pointer",background:"#F8FAFC",fontSize:13,color:MUTED,
+                             transition:"border-color .15s"}}
+                onMouseEnter={e=>e.currentTarget.style.borderColor="#0F2460"}
+                onMouseLeave={e=>e.currentTarget.style.borderColor="#CBD5E1"}>
+                <span style={{fontSize:26}}>📎</span>
+                <span>PDF oder Bild hochladen</span>
+                <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" onChange={handleFile} style={{display:"none"}}/>
+              </label>
+            ) : (
+              <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",
+                           background:"#EFF6FF",borderRadius:8,border:"1px solid #BFDBFE"}}>
+                <span style={{fontSize:20}}>{fileMime==="application/pdf"?"📄":"🖼"}</span>
+                <span style={{fontSize:13,fontWeight:500,flex:1,color:"#1D4ED8"}}>{fileName}</span>
+                <button onClick={removeFile} style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontSize:18}}>×</button>
+              </div>
+            )}
+          </div>
+          {error&&<div style={{marginTop:10,padding:"7px 10px",background:"#FEF2F2",borderRadius:5,color:"#DC2626",fontSize:12}}>⚠ {error}</div>}
+          <div style={{marginTop:14,display:"flex",justifyContent:"flex-end"}}>
+            <button onClick={analyse} disabled={loading}
+              style={{...PB,opacity:loading?.6:1,cursor:loading?"wait":"pointer",display:"flex",alignItems:"center",gap:8}}>
+              {loading?<><span style={{display:"inline-block",width:14,height:14,border:"2px solid rgba(255,255,255,.3)",borderTop:"2px solid white",borderRadius:"50%",animation:"spin 1s linear infinite"}}/>Analysiere…</>:<>🔍 Beleg analysieren</>}
+            </button>
+          </div>
+        </Card>
+      )}
+
+      {mode==="single" && suggestion && !booked && (
+        <Card title="Buchungsvorschlag">
+          <div style={{padding:"10px 12px",background:"#F0F9FF",borderRadius:7,
+                       borderLeft:"3px solid #0284C7",marginBottom:16,fontSize:13,color:"#0369A1"}}>
+            💡 {suggestion.reasoning}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:14}}>
+            <div><Field label="Datum"><input type="date" value={suggestion.date}
+              onChange={e=>setSuggestion(p=>({...p,date:e.target.value}))} style={{...IS,fontSize:13}}/></Field></div>
+            <div style={{gridColumn:"span 2"}}><Field label="Buchungstext"><input type="text" value={suggestion.description}
+              onChange={e=>setSuggestion(p=>({...p,description:e.target.value}))} style={{...IS,fontSize:13}}/></Field></div>
+            <div><Field label="Belegnummer"><input type="text" value={suggestion.reference||""}
+              onChange={e=>setSuggestion(p=>({...p,reference:e.target.value}))} style={{...IS,fontSize:13}}/></Field></div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 160px",gap:10,marginBottom:16}}>
+            <Field label="Soll (Debit)"><AccountSelect accounts={accounts} value={suggestion.debit} onChange={v=>setSuggestion(p=>({...p,debit:v}))}/></Field>
+            <Field label="Haben (Kredit)"><AccountSelect accounts={accounts} value={suggestion.credit} onChange={v=>setSuggestion(p=>({...p,credit:v}))}/></Field>
+            <Field label="Betrag CHF"><input type="number" step="0.05" value={suggestion.amount}
+              onChange={e=>setSuggestion(p=>({...p,amount:e.target.value}))}
+              style={{...IS,fontFamily:"'JetBrains Mono',monospace",textAlign:"right",fontSize:15,fontWeight:700}}/></Field>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",background:"#F8FAFC",borderRadius:8,marginBottom:16}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:10,color:MUTED,marginBottom:2}}>SOLL</div>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:800,fontSize:15,color:accColor(suggestion.debit)}}>{suggestion.debit}</span>
+              <div style={{fontSize:11,color:"#64748B"}}>{accName(suggestion.debit)}</div>
+            </div>
+            <div style={{fontSize:20,color:"#CBD5E1",flex:1,textAlign:"center"}}>→</div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:10,color:MUTED,marginBottom:2}}>BETRAG</div>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:800,fontSize:18}}>CHF {fmt(suggestion.amount)}</span>
+            </div>
+            <div style={{fontSize:20,color:"#CBD5E1",flex:1,textAlign:"center"}}>→</div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:10,color:MUTED,marginBottom:2}}>HABEN</div>
+              <span style={{fontFamily:"'JetBrains Mono',monospace",fontWeight:800,fontSize:15,color:accColor(suggestion.credit)}}>{suggestion.credit}</span>
+              <div style={{fontSize:11,color:"#64748B"}}>{accName(suggestion.credit)}</div>
+            </div>
+          </div>
+          <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+            <button onClick={resetSingle} style={SB}>← Neuer Beleg</button>
+            <button onClick={bookSingle} style={{...PB,background:"#16A34A",padding:"9px 24px",fontSize:14}}>
+              ✓ Buchung ins Journal
+            </button>
+          </div>
+        </Card>
+      )}
+
+      {mode==="single" && booked && (
+        <div style={{background:"#F0FDF4",border:"2px solid #16A34A",borderRadius:12,padding:"24px",textAlign:"center"}}>
+          <div style={{fontSize:36,marginBottom:8}}>✅</div>
+          <div style={{fontWeight:800,fontSize:16,color:"#15803D",marginBottom:4}}>Buchung erfasst!</div>
+          <div style={{fontSize:13,color:"#64748B",marginBottom:16}}>
+            {suggestion.date} · {suggestion.description} · CHF {fmt(suggestion.amount)}
+          </div>
+          <button onClick={resetSingle} style={{...PB,background:"#15803D"}}>+ Nächsten Beleg</button>
+        </div>
+      )}
+
+      {/* ── CSV MODE ── */}
+      {mode==="csv" && csvRows.length===0 && (
+        <Card title="Kontoauszug importieren">
+          <div style={{fontSize:13,color:"#64748B",marginBottom:14,lineHeight:1.6}}>
+            Unterstütztes Format: <strong>neon CSV-Kontoauszug</strong> (Semikolon-getrennt, Spalten: Date, Amount, Description, Subject, Category…)<br/>
+            Claude analysiert alle Transaktionen und schlägt Buchungen vor — du überprüfst und buchst mit einem Klick.
+          </div>
+          <label style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8,
+                         padding:"32px 16px",border:"2px dashed #CBD5E1",borderRadius:8,
+                         cursor:"pointer",background:"#F8FAFC",fontSize:13,color:MUTED,
+                         transition:"border-color .15s"}}
+            onMouseEnter={e=>e.currentTarget.style.borderColor="#0F2460"}
+            onMouseLeave={e=>e.currentTarget.style.borderColor="#CBD5E1"}>
+            <span style={{fontSize:36}}>📊</span>
+            <span style={{fontWeight:600,color:"#334155"}}>CSV-Datei hochladen</span>
+            <span style={{fontSize:11}}>neon Kontoauszug · Semikolon-getrennt</span>
+            <input type="file" accept=".csv" onChange={handleCsv} style={{display:"none"}}/>
+          </label>
+          {error&&<div style={{marginTop:10,padding:"7px 10px",background:"#FEF2F2",borderRadius:5,color:"#DC2626",fontSize:12}}>⚠ {error}</div>}
+        </Card>
+      )}
+
+      {mode==="csv" && csvRows.length>0 && (
+        <div>
+          {/* Toolbar */}
+          <div style={{display:"flex",gap:10,marginBottom:14,alignItems:"center",flexWrap:"wrap"}}>
+            <span style={{fontSize:13,color:"#64748B",fontWeight:600}}>
+              {csvRows.length} Transaktionen geladen
+            </span>
+            {bookedCount>0&&<span style={{background:"#F0FDF4",color:"#15803D",padding:"2px 9px",borderRadius:999,fontSize:11,fontWeight:600}}>✓ {bookedCount} gebucht</span>}
+            <div style={{flex:1}}/>
+            <button onClick={()=>{setCsvRows([]);setCsvResults([]);setCsvDone(false);setError("");}} style={SB}>
+              × Neue CSV
+            </button>
+            {!csvDone&&(
+              <button onClick={analyseCsv} disabled={csvLoading}
+                style={{...PB,display:"flex",alignItems:"center",gap:8,opacity:csvLoading?.6:1}}>
+                {csvLoading
+                  ?<><span style={{display:"inline-block",width:14,height:14,border:"2px solid rgba(255,255,255,.3)",borderTop:"2px solid white",borderRadius:"50%",animation:"spin 1s linear infinite"}}/>Analysiere {csvRows.length} Buchungen…</>
+                  :<>🔍 Alle analysieren</>}
+              </button>
+            )}
+            {csvDone&&selectedCount>0&&(
+              <button onClick={bookSelected}
+                style={{...PB,background:"#16A34A",display:"flex",alignItems:"center",gap:6}}>
+                ✓ {selectedCount} ausgewählte buchen
+              </button>
+            )}
+          </div>
+
+          {/* Table */}
+          <div style={{background:"white",borderRadius:10,border:"1px solid #E2E8F0",overflow:"auto",boxShadow:"0 1px 3px rgba(0,0,0,.05)"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",minWidth:900}}>
+              <thead>
+                <tr>
+                  <Th style={{width:36}}>
+                    <input type="checkbox"
+                      checked={csvResults.filter(r=>!r.booked).every(r=>r.selected)}
+                      onChange={e=>toggleAll(e.target.checked)}/>
+                  </Th>
+                  <Th style={{width:96}}>Datum</Th>
+                  <Th align="right" style={{width:90}}>Betrag</Th>
+                  <Th>Beschreibung</Th>
+                  <Th style={{width:80}}>Soll</Th>
+                  <Th style={{width:80}}>Haben</Th>
+                  <Th align="right" style={{width:90}}>CHF</Th>
+                  <Th style={{width:180}}>Buchungstext</Th>
+                  <Th style={{width:50}}/>
+                </tr>
+              </thead>
+              <tbody>
+                {csvResults.map((r,i)=>{
+                  const s = r.suggestion;
+                  const isBooked = r.booked;
+                  return (
+                    <tr key={i} style={{
+                      opacity: isBooked?.5:1,
+                      background: isBooked?"#F0FDF4":r.selected?"white":"#FAFAFA"
+                    }}>
+                      <Td>
+                        {isBooked
+                          ? <span style={{color:"#15803D",fontWeight:700,fontSize:13}}>✓</span>
+                          : <input type="checkbox" checked={r.selected} onChange={()=>toggleRow(i)}/>}
+                      </Td>
+                      <Td style={{fontFamily:"'JetBrains Mono',monospace",fontSize:11,color:"#475569"}}>
+                        {s?.date||r.Date}
+                      </Td>
+                      <Td align="right" style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,
+                        fontWeight:600,color:Number(r.Amount)<0?"#DC2626":"#059669"}}>
+                        {r.Amount}
+                      </Td>
+                      <Td style={{fontSize:12,color:"#334155"}}>
+                        <div style={{fontWeight:500}}>{r.Description}</div>
+                        {r.Subject&&<div style={{fontSize:10,color:MUTED}}>{r.Subject}</div>}
+                      </Td>
+                      {s ? (
+                        <>
+                          <Td>
+                            <select value={s.debit} onChange={e=>updateSugg(i,"debit",e.target.value)}
+                              style={{...IS,padding:"3px 6px",fontSize:11,fontFamily:"'JetBrains Mono',monospace",
+                                      fontWeight:700,color:accColor(s.debit),width:75}}>
+                              {accounts.sort((a,b)=>a.number.localeCompare(b.number)).map(a=>(
+                                <option key={a.number} value={a.number}>{a.number}</option>
+                              ))}
+                            </select>
+                          </Td>
+                          <Td>
+                            <select value={s.credit} onChange={e=>updateSugg(i,"credit",e.target.value)}
+                              style={{...IS,padding:"3px 6px",fontSize:11,fontFamily:"'JetBrains Mono',monospace",
+                                      fontWeight:700,color:accColor(s.credit),width:75}}>
+                              {accounts.sort((a,b)=>a.number.localeCompare(b.number)).map(a=>(
+                                <option key={a.number} value={a.number}>{a.number}</option>
+                              ))}
+                            </select>
+                          </Td>
+                          <Td align="right" style={{fontFamily:"'JetBrains Mono',monospace",fontSize:12,fontWeight:600}}>
+                            {fmt(s.amount)}
+                          </Td>
+                          <Td>
+                            <input value={s.description} onChange={e=>updateSugg(i,"description",e.target.value)}
+                              style={{...IS,padding:"3px 6px",fontSize:11,width:"100%"}}/>
+                          </Td>
+                        </>
+                      ) : (
+                        <td colSpan={4} style={{padding:"8px 12px",fontSize:11,color:MUTED,fontStyle:"italic"}}>
+                          {csvLoading?"Wird analysiert…":"—"}
+                        </td>
+                      )}
+                      <Td>
+                        {s&&!isBooked&&(
+                          <div style={{fontSize:10,color:MUTED,lineHeight:1.3}} title={s.reasoning}>
+                            ℹ️
+                          </div>
+                        )}
+                      </Td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {csvDone&&(
+            <div style={{marginTop:10,fontSize:12,color:"#64748B",textAlign:"center"}}>
+              Hover über ℹ️ für Begründung · Soll/Haben und Buchungstext direkt in der Tabelle editierbar
+            </div>
+          )}
+        </div>
+      )}
+
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+// MAIN APP
+// ═══════════════════════════════════════════════════════════════
+function App() {
+  const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
+  const [entries,  setEntries]  = useState([]);
+  const [tab,      setTab]      = useState("journal");
+  const [year,     setYear]     = useState(2025);
+  const [loaded,   setLoaded]   = useState(false);
+  const [saving,   setSaving]   = useState(false);
+
+  // ── Load from localStorage ────────────────────────────────
+  useEffect(()=>{
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        const d = JSON.parse(raw);
+        if(d.accounts) setAccounts(d.accounts);
+        if(d.entries)  setEntries(d.entries);
+        if(d.year)     setYear(d.year);
+      }
+    } catch(e) { /* first run */ }
+    setLoaded(true);
+  },[]);
+
+  // ── Auto-save (debounced 600ms) ───────────────────────────
+  useEffect(()=>{
+    if(!loaded) return;
+    setSaving(true);
+    const t = setTimeout(()=>{
+      try { localStorage.setItem(STORAGE_KEY,JSON.stringify({accounts,entries,year})); }
+      catch(e){ console.error("Storage error:",e); }
+      setSaving(false);
+    },600);
+    return ()=>clearTimeout(t);
+  },[accounts,entries,year,loaded]);
+
+  // ── Account saldo ─────────────────────────────────────────
+  const getSaldo = useCallback((num, filterYear=null)=>{
+    const acc = accounts.find(a=>a.number===num);
+    if(!acc) return 0;
+    const ents = filterYear ? entries.filter(e=>e.date.startsWith(String(filterYear))) : entries;
+    const d = ents.filter(e=>e.debit===num).reduce((s,e)=>s+Number(e.amount),0);
+    const c = ents.filter(e=>e.credit===num).reduce((s,e)=>s+Number(e.amount),0);
+    return (acc.category==="aktiven"||acc.category==="aufwand") ? d-c : c-d;
+  },[accounts,entries]);
+
+  const TABS = [
+    { id:"journal",   label:"📝 Journal"        },
+    { id:"kontenplan",label:"📋 Kontenplan"      },
+    { id:"hauptbuch", label:"📖 Hauptbuch"       },
+    { id:"bilanz",    label:"⚖️ Bilanz"          },
+    { id:"erfolg",    label:"📊 Erfolgsrechnung" },
+    { id:"assistent",  label:"🤖 Buchungsassistent" },
+  ];
+
+  if(!loaded) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",
+                 height:"100vh",fontFamily:"sans-serif",color:MUTED,fontSize:14}}>
+      Lade Buchhaltungsdaten …
+    </div>
+  );
+
+  return (
+    <div style={{fontFamily:"'Outfit',sans-serif",minHeight:"100vh",background:"#F1F5F9"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+        *{box-sizing:border-box;}
+        .hover-row:hover td{background:rgba(15,36,96,.03)!important;}
+        input:focus,select:focus{border-color:#0F2460!important;box-shadow:0 0 0 3px rgba(15,36,96,.1)!important;outline:none;}
+        ::-webkit-scrollbar{width:6px;height:6px;}
+        ::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:3px;}
+        @media print{
+          .no-print{display:none!important;}
+          body,#root>div{background:white!important;}
+          .hover-row:hover td{background:transparent!important;}
+        }
+      `}</style>
+
+      {/* ── Header ── */}
+      <div className="no-print"
+        style={{background:"linear-gradient(135deg,#0F2460 0%,#1a3a80 100%)",
+                color:"white",padding:"0 24px",
+                boxShadow:"0 2px 12px rgba(15,36,96,.25)"}}>
+        <div style={{maxWidth:1200,margin:"0 auto",display:"flex",
+                     alignItems:"center",justifyContent:"space-between",height:62}}>
+          <div>
+            <div style={{fontSize:9.5,letterSpacing:3.5,textTransform:"uppercase",
+                         opacity:.5,marginBottom:2}}>
+              Doppelte Buchhaltung · Schweizer Vereins-Kontenrahmen · FJ {year}
+            </div>
+            <div style={{fontSize:21,fontWeight:800,letterSpacing:-.5}}>Verein Werckmeister</div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:14}}>
+            {saving&&<span style={{fontSize:11,opacity:.45,fontStyle:"italic"}}>Speichere…</span>}
+            <span style={{fontSize:11,opacity:.55}}>Geschäftsjahr</span>
+            <select value={year} onChange={e=>setYear(Number(e.target.value))}
+              style={{background:"rgba(255,255,255,.13)",color:"white",
+                      border:"1px solid rgba(255,255,255,.3)",borderRadius:7,
+                      padding:"5px 12px",fontSize:14,fontWeight:700,fontFamily:"inherit",cursor:"pointer"}}>
+              {[2023,2024,2025,2026,2027].map(y=>(
+                <option key={y} value={y} style={{color:"#0F2460",background:"white"}}>{y}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Tab bar ── */}
+      <div className="no-print"
+        style={{background:"#0C1D52",borderBottom:"3px solid #F1F5F9"}}>
+        <div style={{maxWidth:1200,margin:"0 auto",display:"flex",padding:"0 24px"}}>
+          {TABS.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              padding:"11px 18px",border:"none",cursor:"pointer",
+              fontSize:13,fontWeight:tab===t.id?700:400,
+              fontFamily:"inherit",letterSpacing:.1,
+              background:tab===t.id?"#F1F5F9":"transparent",
+              color:tab===t.id?"#0F2460":"rgba(255,255,255,.6)",
+              borderRadius:tab===t.id?"8px 8px 0 0":4,
+              transition:"all .15s",
+            }}>{t.label}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Content ── */}
+      <div style={{maxWidth:1200,margin:"0 auto",padding:24}}>
+        {tab==="journal"    && <JournalTab    accounts={accounts} setAccounts={setAccounts}
+                                               entries={entries}   setEntries={setEntries}  year={year}/>}
+        {tab==="kontenplan" && <KontenplanTab  accounts={accounts} setAccounts={setAccounts}
+                                               entries={entries}   getSaldo={getSaldo} year={year}/>}
+        {tab==="hauptbuch"  && <HauptbuchTab   accounts={accounts} entries={entries}         year={year}/>}
+        {tab==="bilanz"     && <BilanzTab       accounts={accounts} getSaldo={getSaldo}       year={year}/>}
+        {tab==="erfolg"     && <ErfolgsrechnungTab accounts={accounts} getSaldo={getSaldo}    year={year}/>}
+        {tab==="assistent"  && <AssistentTab accounts={accounts} setEntries={setEntries} year={year}/>}
+      </div>
+    </div>
+  );
+}
+
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
